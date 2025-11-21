@@ -11,7 +11,9 @@ source:
 build:
   number: 0
   noarch: python
-  script: python setup.py install --single-version-externally-managed --record=record.txt
+  script:
+    - python setup.py install --single-version-externally-managed --record=record.txt
+    - pip install torch==2.9.0 transformers==4.57.1 sentencepiece==0.2.1 protobuf==6.33.0 bio==1.8.1
   entry_points:
     - tafinder = tafinder:main
 
@@ -29,12 +31,7 @@ requirements:
     - prodigal=2.6.3
     - prodigal-gv=2.11.0
     - foldseek
-    - pip:
-      - torch==2.9.0
-      - transformers==4.57.1
-      - sentencepiece==0.2.1
-      - protobuf==6.33.0
-      - bio==1.8.1
+    - pip
 
 test:
   imports:
