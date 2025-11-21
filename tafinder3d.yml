@@ -1,0 +1,22 @@
+name: tafinder-foldseek
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  - python=3.12
+  - numpy=2.3.4
+  - pandas=2.3.3
+  - mmseqs2=18.8cc5
+  - hmmer=3.4
+  - prodigal=2.6.3
+  - prodigal-gv=2.11.0
+  - foldseek=10.941cd33
+  - pip
+  - pip:
+    - torch==2.9.0
+    - transformers==4.57.1
+    - sentencepiece==0.2.1
+    - protobuf==6.33.0
+    - bio==1.8.1
