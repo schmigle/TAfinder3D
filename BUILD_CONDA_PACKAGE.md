@@ -10,7 +10,7 @@ conda install conda-build anaconda-client
 ### 2. Build the package
 ```bash
 cd /Users/moshe.steyn/Downloads/TAfinder3D
-conda build . --output-folder ./conda-bld
+conda build . -c conda-forge -c bioconda --output-folder ./conda-bld
 ```
 
 ### 3. Upload to Anaconda Cloud
