@@ -18,11 +18,18 @@ It can be run with the following command:
 
 `-i/--infile`--the genome file you want to annotate. Can be a genbank or fasta file. 
 
-`-f/--format`--format of the genome file. Specify `genbank` or `fna`.
+`-f/--format`--format of the genome file. Specify `gbk` or `fna`.
 
 `-o/--outfile`--name of the output file. This will be a `csv` file, though you can name it any string you like.
 
 A complete list of options is provided in the help text, accessible with `tafinder -h`.
+
+To insstall and test, you can download `bacteroides.gbk`, provided above, then run the following commands:
+
+```
+mamba create -n tafinder3d -c bioconda -c conda-forge -c schmigle tafinder3d
+tafinder -i bacteroides.gbk -f gbk -o bacteroides_tafinder.csv
+```
 
 ## Citations
 
