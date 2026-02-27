@@ -114,7 +114,21 @@ def gb_to_files(gbk_path, fna_out, faa_out, ptt_out):
         for row in rows:
             f.write("\t".join(str(x) for x in row) + "\n")
 
+def _maybe_decompress(filepath, tmp_dir):
+    """If filepath is gzipped, decompress to tmp_dir and return new path."""
+    import gzip
+    if filepath.endswith('.gz'):
+        decompressed = os.path.join(tmp_dir, os.path.basename(filepath[:-3]))
+        with gzip.open(filepath, 'rb') as f_in, open(decompressed, 'wb') as f_out:
+            f_out.write(f_in.read())
+        print(f"  Decompressed {os.path.basename(filepath)} -> {os.path.basename(decompressed)}")
+        return decompressed
+    return filepath
+
+
 def process_input_files(args, config):
+    args.infile = _maybe_decompress(args.infile, args.tmp_dir)
+
     if args.format == 'gbk':
         gb_to_files(args.infile, config['fna_file'], config['faa_file'], config['ptt_file'])
     else:

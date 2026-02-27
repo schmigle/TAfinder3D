@@ -1,4 +1,65 @@
 db_id	protein_name
+antitoxin_144	paaA
+antitoxin_145	relB
+antitoxin_147	vapB
+antitoxin_149	mazE
+antitoxin_154	HigA2
+antitoxin_160	ccdA
+antitoxin_162	pemI
+antitoxin_164	relB
+antitoxin_167	PumB
+antitoxin_168	relB
+antitoxin_171	vapB
+antitoxin_177	relB
+antitoxin_191	PfiA
+antitoxin_21	vapB
+antitoxin_210	brnA
+antitoxin_212	brnA
+antitoxin_223	higA
+antitoxin_224	ata
+antitoxin_232	parD
+antitoxin_241	AbiEi
+antitoxin_242	vapB
+antitoxin_251	hipB
+antitoxin_252	relB
+antitoxin_257	vapB
+antitoxin_260	darG
+antitoxin_264	relB
+antitoxin_266	vapB
+antitoxin_268	Xre
+antitoxin_275	relB
+antitoxin_277	SdhE
+antitoxin_283	relB
+antitoxin_295	hicB
+antitoxin_306	Xre
+antitoxin_309	panA
+antitoxin_316	higA
+antitoxin_339	mazE
+antitoxin_34	dhiA
+antitoxin_340	vapB
+antitoxin_342	uncharacterized antitoxin (S. aureus)
+antitoxin_349	YpjF
+antitoxin_351	mazE
+antitoxin_352	tacA
+antitoxin_357	sezA
+antitoxin_362	vapB
+antitoxin_371	KacA
+antitoxin_380	relB
+antitoxin_381	higA
+antitoxin_39	relB
+antitoxin_42	relB
+antitoxin_44	vapB
+antitoxin_46	HipS
+antitoxin_48	hicB
+antitoxin_52	higA
+antitoxin_61	yefM
+antitoxin_7	mazE
+antitoxin_73	epsilon
+antitoxin_75	vapB
+antitoxin_76	relB
+antitoxin_78	mqsA
+antitoxin_90	higA
+antitoxin_98	BoVapB5
 antitoxin_ABJ01487.1	DprA
 antitoxin_AMJ60620.1	BoHicB
 antitoxin_AMJ60829.1	BoVapB4
@@ -235,6 +296,7 @@ antitoxin_AT3306	vapB
 antitoxin_AT3484	Xre
 antitoxin_AT3593	hicB
 antitoxin_AT3856	vapB
+antitoxin_AT4244	uncharacterized antitoxin (S. aureus)
 antitoxin_AT4250	vapB
 antitoxin_AT439	vapB
 antitoxin_AT443	tacA
@@ -278,6 +340,7 @@ antitoxin_AT6106	relB
 antitoxin_AT6107	hicB
 antitoxin_AT6108	hipB
 antitoxin_AT6109	ccdA
+antitoxin_AT611	uncharacterized antitoxin (S. aureus)
 antitoxin_AT6111	vagC
 antitoxin_AT6112	vagC
 antitoxin_AT6113	vapB
@@ -322,6 +385,7 @@ antitoxin_AT6285	relB
 antitoxin_AT6286	virA
 antitoxin_AT6288	arc1
 antitoxin_AT6289	relB
+antitoxin_AT6297a	uncharacterized antitoxin (B. cereus)
 antitoxin_AT6297b	spoIISB
 antitoxin_AT6319	AbiEi
 antitoxin_AT6320	AbiEi
@@ -377,8 +441,82 @@ antitoxin_AT977	vapB
 antitoxin_AT978	relB
 antitoxin_AT98	vapB
 antitoxin_Aeromonas	AvtT
+antitoxin_OUO42087.1	uncharacterized antitoxin (M. sp.)
 antitoxin_WP_010876103.1	MntA
 antitoxin_pdb|9KAN|D	VapW
+toxin_10	hicA
+toxin_113	mazF
+toxin_12	YpjF
+toxin_123	parE
+toxin_134	Hok
+toxin_136	vapC
+toxin_138	mazF
+toxin_14	bsrH
+toxin_169	toxT
+toxin_18	ImmA
+toxin_19	hicA
+toxin_196	vapC
+toxin_198	vapC
+toxin_2	BrnT
+toxin_20	MvpT
+toxin_203	tacT
+toxin_207	LdrA
+toxin_208	uncharacterized toxin (C. difficile)
+toxin_214	relE
+toxin_229	Xre
+toxin_232	phRel2
+toxin_235	pezT
+toxin_238	TimP
+toxin_255	vapC
+toxin_256	vapC
+toxin_257	parE
+toxin_266	ToxN
+toxin_275	tad
+toxin_277	yqcG
+toxin_278	HipA1
+toxin_28	Fst
+toxin_281	IbsE
+toxin_284	relE
+toxin_288	higB
+toxin_296	uncharacterized toxin (H. pylori)
+toxin_298	vapC
+toxin_302	higB
+toxin_308	CptIN
+toxin_312	higB
+toxin_314	vapC
+toxin_320	relE
+toxin_324	holin
+toxin_326	vapC
+toxin_331	darT
+toxin_332	panT
+toxin_344	relE
+toxin_353	mazF
+toxin_359	vapC
+toxin_36	ccdB
+toxin_371	vapC
+toxin_375	dhiT
+toxin_384	vapC
+toxin_389	mazF
+toxin_405	relE
+toxin_410	mqsR
+toxin_414	relE
+toxin_417	yafQ
+toxin_421	ZorP
+toxin_422	type I toxin (C. difficile)
+toxin_431	relE
+toxin_438	GNAT
+toxin_44	holin
+toxin_443	higB
+toxin_448	MAG6410
+toxin_453	vapC
+toxin_455	vapC
+toxin_457	relE
+toxin_52	mazF
+toxin_58	holin
+toxin_61	vapC
+toxin_97	pezT
+toxin_99	mazF
+toxin_ABJ01488.1	uncharacterized toxin (E. coli)
 toxin_AMJ59134.1	BoVapC1
 toxin_AMJ60619.1	HicA
 toxin_AMJ60830.1	BoVapC4
@@ -408,6 +546,7 @@ toxin_T10016	AbiEii
 toxin_T10019	pezT
 toxin_T10024	Fst
 toxin_T10025	holin
+toxin_T10026	uncharacterized toxin (S. aureus)
 toxin_T10027	holin
 toxin_T10028	Fst
 toxin_T10029	Fst
@@ -426,7 +565,7 @@ toxin_T10041	tacT
 toxin_T10042	mazF
 toxin_T10044	PrcT
 toxin_T10045	YgfX
-toxin_T10046	subtilisin-likeserineprotease
+toxin_T10046	subtilisin-like serineprotease
 toxin_T10047	MAG6410
 toxin_T10048	Fic
 toxin_T10049	holin
@@ -462,6 +601,9 @@ toxin_T10079	PrpT
 toxin_T1008	parE_1
 toxin_T10080	type I toxin (C. difficile)
 toxin_T10081	type I toxin (C. difficile)
+toxin_T10082	uncharacterized toxin (C. difficile)
+toxin_T10083	uncharacterized toxin (C. difficile)
+toxin_T10085	uncharacterized toxin (H. pylori)
 toxin_T10086	TimP
 toxin_T10087	TimP
 toxin_T10088	TfiT
@@ -515,6 +657,7 @@ toxin_T10142	relE
 toxin_T10143	relE
 toxin_T10144	pezT
 toxin_T10145	ParT
+toxin_T10148	uncharacterized toxin (S. aureus)
 toxin_T10149	Fst
 toxin_T10150	hicA
 toxin_T10151	TsxA
@@ -570,6 +713,9 @@ toxin_T10209	MokC
 toxin_T10210	Hok
 toxin_T10211	Hok
 toxin_T10213	ZorP
+toxin_T10214	uncharacterized toxin (H. pylori)
+toxin_T10216	uncharacterized toxin (H. pylori)
+toxin_T10217	uncharacterized toxin (H. pylori)
 toxin_T10218	RalR
 toxin_T10219	ydaC
 toxin_T103	higB
@@ -645,6 +791,7 @@ toxin_T229	relE
 toxin_T233	parE
 toxin_T28	relE
 toxin_T301	relE
+toxin_T3011	uncharacterized toxin (P. aeruginosa)
 toxin_T303	higB
 toxin_T307	Xre
 toxin_T309	parE
@@ -834,17 +981,3 @@ toxin_T972	vapC
 toxin_T977	vapC
 toxin_T978	relE
 toxin_T98	vapC
-antitoxin_AT4244	uncharacterized antitoxin (S. aureus)
-antitoxin_AT611	uncharacterized antitoxin (S. aureus)
-antitoxin_AT6297a	uncharacterized antitoxin (B. cereus)
-antitoxin_OUO42087.1	uncharacterized antitoxin (M. sp.)
-toxin_ABJ01488.1	uncharacterized toxin (E. coli)
-toxin_T10026	uncharacterized toxin (S. aureus)
-toxin_T10082	uncharacterized toxin (C. difficile)
-toxin_T10083	uncharacterized toxin (C. difficile)
-toxin_T10085	uncharacterized toxin (H. pylori)
-toxin_T10148	uncharacterized toxin (S. aureus)
-toxin_T10214	uncharacterized toxin (H. pylori)
-toxin_T10216	uncharacterized toxin (H. pylori)
-toxin_T10217	uncharacterized toxin (H. pylori)
-toxin_T3011	uncharacterized toxin (P. aeruginosa)
