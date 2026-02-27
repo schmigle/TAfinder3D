@@ -74,16 +74,24 @@ def _resolve_family_name(target_id, family_map):
     """Resolve a database target ID to a human-readable protein family name.
 
     Checks the lookup table first, then falls back to stripping the
-    toxin_/antitoxin_ prefix from the target ID.
+    toxin_/antitoxin_ prefix from the target ID.  If the stripped result
+    is purely numeric (e.g. HMM profile numbers), return None so the
+    caller can try the next method in the priority list.
     """
     if target_id in family_map:
         return family_map[target_id]
     # Fall back: strip prefix
+    stripped = None
     if target_id.startswith('toxin_'):
-        return target_id[6:]
-    if target_id.startswith('antitoxin_'):
-        return target_id[10:]
-    return target_id
+        stripped = target_id[6:]
+    elif target_id.startswith('antitoxin_'):
+        stripped = target_id[10:]
+    else:
+        stripped = target_id
+    # Don't return bare numbers (HMM profile IDs like toxin_169)
+    if stripped and not stripped.isdigit():
+        return stripped
+    return None
 
 def create_all_outputs(search_results, neighborhoods, config, args, type1_validation_status=None):
     """Generate all output files."""

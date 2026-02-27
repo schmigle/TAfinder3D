@@ -3,7 +3,7 @@ import os
 
 setup(
     name='tafinder3d',
-    version='1.0.5',
+    version='1.0.6',
     author='Moshe Steyn',
     author_email='moshe.steyn@pnnl.gov',
     description='Toxin-antitoxin system identification with 3D structure-based searching',

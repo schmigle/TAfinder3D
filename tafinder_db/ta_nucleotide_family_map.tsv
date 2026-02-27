@@ -291,7 +291,7 @@ antitoxin_AT179	relB
 antitoxin_AT180	parD
 antitoxin_AT1818	DUF2281
 antitoxin_AT182	vapB
-antitoxin_AT183	Product
+antitoxin_AT183	PfiA
 antitoxin_AT1852	pemI
 antitoxin_AT190	ccdA
 antitoxin_AT199	ataR
@@ -724,7 +724,7 @@ toxin_T178	relE
 toxin_T180	parE
 toxin_T1818	DUF2281
 toxin_T182	vapC
-toxin_T183	Product
+toxin_T183	PfiT
 toxin_T1852	pemK
 toxin_T190	ccdB
 toxin_T199	ataT
