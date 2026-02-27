@@ -28,6 +28,7 @@ To insstall and test, you can download `bacteroides.gbk`, provided above, then r
 
 ```
 mamba create -n tafinder3d -c bioconda -c conda-forge -c schmigle tafinder3d
+mamba activate tafinder3d
 tafinder -i bacteroides.gbk -f gbk -o bacteroides_tafinder.csv
 ```
 
