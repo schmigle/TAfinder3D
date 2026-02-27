@@ -21,17 +21,33 @@ def calculate_overlap(coord_query, coord_subject):
     return overlap / (end_1 - start_1 + 1)
 
 def determine_cutoff_params(args, search_type):
-    if args.use_evalue:
-        # Use e-value cutoffs
-        return args.evalue, True, str(args.evalue)
+    """Determine cutoff parameters for search and filtering.
 
-    # Use bitscore cutoff
+    Returns:
+        tuple: (bitscore_threshold, apply_bitscore_filter, evalue_for_search)
+            - bitscore_threshold: Bitscore threshold for post-search filtering (or None if disabled)
+            - apply_bitscore_filter: Whether to apply bitscore filtering
+            - evalue_for_search: E-value to use in the search command
+    """
+    # Map search type to appropriate e-value (always used in search commands)
+    evalue_map = {
+        'mmseqs': args.mmseqs_evalue,
+        'hmm': args.hmm_evalue,
+        'foldseek': args.foldseek_evalue
+    }
+    evalue = evalue_map.get(search_type, 1e-5)
+
+    # Determine if bitscore filtering should be applied
+    if args.no_bitscore:
+        return None, False, str(evalue)
+
+    # Return bitscore threshold for post-search filtering
     bitscore_map = {
         'mmseqs': args.mmseqs_bitscore,
         'hmm': args.hmm_bitscore,
         'foldseek': args.foldseek_bitscore
     }
-    return bitscore_map[search_type], False, "1000"
+    return bitscore_map[search_type], True, str(evalue)
 
 def find_overlapping_gene_in_ptt(ptt, query_start, query_end, has_contig, query_contig=None):
     for idx in range(len(ptt)):
@@ -50,7 +66,7 @@ def find_overlapping_gene_in_ptt(ptt, query_start, query_end, has_contig, query_
             return gene_id, start, end, strand, contig
     return None, None, None, None, None
 
-def update_method_info(results, gene_id, method_name, evalue, bitscore, use_evalue):
+def update_method_info(results, gene_id, method_name, evalue, bitscore, use_evalue, target=None):
     """Update method_info dict with new results, avoiding duplicates."""
     if gene_id in results['method_info']:
         # Don't add duplicate method name
@@ -59,14 +75,19 @@ def update_method_info(results, gene_id, method_name, evalue, bitscore, use_eval
         # Update scores if better
         evalue_key = f'{method_name.lower()}_evalue'
         bitscore_key = f'{method_name.lower()}_bitscore'
+        target_key = f'{method_name.lower()}_target'
         if use_evalue:
             if evalue < results['method_info'][gene_id].get(evalue_key, float('inf')):
                 results['method_info'][gene_id][evalue_key] = evalue
                 results['method_info'][gene_id][bitscore_key] = bitscore
+                if target:
+                    results['method_info'][gene_id][target_key] = target
         else:
             if bitscore > results['method_info'][gene_id].get(bitscore_key, 0):
                 results['method_info'][gene_id][evalue_key] = evalue
                 results['method_info'][gene_id][bitscore_key] = bitscore
+                if target:
+                    results['method_info'][gene_id][target_key] = target
     else:
         method_key = method_name.lower()
         results['method_info'][gene_id] = {
@@ -74,6 +95,8 @@ def update_method_info(results, gene_id, method_name, evalue, bitscore, use_eval
             f'{method_key}_evalue': evalue,
             f'{method_key}_bitscore': bitscore
         }
+        if target:
+            results['method_info'][gene_id][f'{method_key}_target'] = target
 
 def build_gene_entry(gene_row, gene_type, ta_id, has_contig):
     """Build a single gene entry dict for output."""
@@ -133,20 +156,70 @@ def parse_search_output(output_file, search_type, cutoff_value, use_evalue=False
             return df
 
         elif search_type == 'mmseqs_rna':
-            # MMseqs2 RNA search - same format as protein search
+            # MMseqs2 RNA search - reduced 10-column format
+            # query,target,pident,alnlen,mismatch,gapopen,qstart,qend,evalue,bits
             df = pd.read_csv(output_file, header=None, sep="\t")
 
             # Apply cutoff based on mode
             if use_evalue:
-                df = df[df[10] < cutoff_value]  # E-value filter
+                df = df[df[8] < cutoff_value]  # E-value filter (column 8)
             else:
-                df = df[df[11] >= cutoff_value]  # Bitscore filter
+                df = df[df[9] >= cutoff_value]  # Bitscore filter (column 9)
 
             # Calculate Ha-value for compatibility
-            df[14] = (df[2] / 100) * df[5] / df[4]
-            # Include columns 7,8 (qstart, qend) for coordinate matching in DNA searches
-            return df[[0, 1, 2, 3, 4, 5, 7, 8, 10, 11, 14]]
+            df[10] = (df[2] / 100) * df[5] / df[4]
+            # Include columns 6,7 (qstart, qend) for coordinate matching
+            return df[[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]
 
     except Exception:
         # Silently return empty DataFrame - likely means no hits found
         return pd.DataFrame()
+
+def ensure_prostt5_weights(prostt5_path):
+    """Check if ProstT5 weights exist, download if not.
+
+    Args:
+        prostt5_path: Full path to the ProstT5 weights directory
+    """
+    import subprocess
+
+    # Check if weights already exist
+    if os.path.exists(prostt5_path) and os.path.isdir(prostt5_path):
+        # Verify it has content
+        if len(os.listdir(prostt5_path)) > 0:
+            print(f"Found ProstT5 weights in {prostt5_path}")
+            return prostt5_path
+
+    # Weights don't exist, download them
+    print(f"ProstT5 weights not found in {prostt5_path}")
+    print("Downloading ProstT5 weights using foldseek...")
+
+    try:
+        parent_dir = os.path.dirname(prostt5_path)
+        os.makedirs(parent_dir, exist_ok=True)
+        tmp_dir = os.path.join(parent_dir, "tmp")
+        os.makedirs(tmp_dir, exist_ok=True)
+
+        # Download using foldseek
+        cmd = ["foldseek", "databases", "ProstT5", prostt5_path, tmp_dir]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+        print(f"Successfully downloaded ProstT5 weights to {prostt5_path}")
+
+        # Clean up tmp directory
+        if os.path.exists(tmp_dir):
+            import shutil
+            shutil.rmtree(tmp_dir)
+
+        return prostt5_path
+
+    except subprocess.CalledProcessError as e:
+        print(f"Error downloading ProstT5 weights: {e}")
+        if e.stdout:
+            print(f"stdout: {e.stdout}")
+        if e.stderr:
+            print(f"stderr: {e.stderr}")
+        raise RuntimeError(f"Failed to download ProstT5 weights. Please run manually: foldseek databases ProstT5 {prostt5_path} tmp")
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        raise

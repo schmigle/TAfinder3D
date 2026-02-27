@@ -2,10 +2,10 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 import pandas as pd
+import numpy as np
 import os
 import re
 import subprocess
-from config import MAX_NEIGHBORHOOD_GENES
 from utils import get_gene_id, is_ncrna, calculate_distance
 
 def extract_cds_sequences(fna_file, coords_file, output_file):
@@ -116,9 +116,9 @@ def gb_to_files(gbk_path, fna_out, faa_out, ptt_out):
 
 def process_input_files(args, config):
     if args.format == 'gbk':
-        gb_to_files(args.input, config['fna_file'], config['faa_file'], config['ptt_file'])
+        gb_to_files(args.infile, config['fna_file'], config['faa_file'], config['ptt_file'])
     else:
-        subprocess.run(["cp", args.input, config['fna_file']], check=True)
+        subprocess.run(["cp", args.infile, config['fna_file']], check=True)
 
         # Prodigal processing
         prodigal_cmd = ["prodigal-gv"] if args.prodigal_mode == "gv" else ["prodigal"]
@@ -126,7 +126,7 @@ def process_input_files(args, config):
             prodigal_cmd.extend(["-p", "meta"])
 
         prodigal_out = f"{args.tmp_dir}/prodigal.out"
-        with open(args.input) as infile, open(prodigal_out, 'w') as outfile:
+        with open(args.infile) as infile, open(prodigal_out, 'w') as outfile:
             subprocess.run(prodigal_cmd + ["-f", "gff"], stdin=infile, stdout=outfile, check=True)
 
         parse_prodigal_into_ptt(prodigal_out, config['ptt_file'], config['fna_file'])
@@ -201,20 +201,91 @@ def build_neighborhoods_with_rna_support(ptt_file, args, rna_results=None):
     ptt = pd.read_csv(ptt_file, sep="\t", skiprows=2)
     has_contig = "Contig" in ptt.columns
 
-    # Mark genes as ncRNA if they're in the validated RNA set
-    rna_gene_mapping = {}  # Maps original gene_id -> marked gene_id
-    if rna_results and rna_results['validated_rna_genes']:
-        print(f"Marking {len(rna_results['validated_rna_genes'])} MMseqs2-detected RNA genes as ncRNA")
-        for idx in range(len(ptt)):
-            gene_id = ptt.loc[idx, "PID"]
-            if gene_id in rna_results['validated_rna_genes']:
-                # Mark as ncRNA by prepending 'Nucl' to PID if not already there
-                if not gene_id.startswith('Nucl'):
-                    marked_id = f"Nucl_{gene_id}"
-                    ptt.loc[idx, "PID"] = marked_id
-                    rna_gene_mapping[gene_id] = marked_id
-                else:
-                    rna_gene_mapping[gene_id] = gene_id
+    # Add new PTT rows for RNA genes detected by MMseqs2
+    if rna_results and rna_results.get('new_ptt_rows'):
+        print(f"Adding {len(rna_results['new_ptt_rows'])} new RNA gene entries to PTT")
+        new_rows_df = pd.DataFrame(rna_results['new_ptt_rows'])
+        ptt = pd.concat([ptt, new_rows_df], ignore_index=True)
+
+        # Sort by contig and location to maintain genomic order
+        if has_contig:
+            ptt = ptt.sort_values(['Contig', 'Location'], key=lambda x: x.map(lambda loc: int(loc.split('..')[0]) if '..' in str(loc) else 0))
+        else:
+            ptt = ptt.sort_values('Location', key=lambda x: x.map(lambda loc: int(loc.split('..')[0]) if '..' in str(loc) else 0))
+        ptt = ptt.reset_index(drop=True)
+
+        # Deduplicate overlapping TA RNA genes (same strand, same contig, ≥50% overlap)
+        # Keep the one with highest bitscore
+        # Only deduplicate same-strand overlaps (opposite strand = different antisense genes)
+        print(f"Deduplicating overlapping TA RNA genes (same strand only)...")
+        rna_genes_to_remove = set()
+        # Include all TA RNA genes (Type I, III, and VIII)
+        rna_genes = [pid for pid in ptt['PID'] if
+                     pid.startswith('Nucl_type1_at_') or
+                     pid.startswith('Nucl_type3_at_') or
+                     pid.startswith('Nucl_type8_')]
+
+        for i, rna1 in enumerate(rna_genes):
+            if rna1 in rna_genes_to_remove:
+                continue
+
+            row1 = ptt[ptt['PID'] == rna1].iloc[0]
+            loc1 = row1['Location']
+            strand1 = row1['Strand']
+            contig1 = row1['Contig'] if has_contig else None
+            start1, end1 = map(int, loc1.split('..'))
+            len1 = end1 - start1 + 1
+            bitscore1 = rna_results['rna_scores'].get(rna1, (0, 0))[1]
+
+            for rna2 in rna_genes[i+1:]:
+                if rna2 in rna_genes_to_remove:
+                    continue
+
+                row2 = ptt[ptt['PID'] == rna2].iloc[0]
+                loc2 = row2['Location']
+                strand2 = row2['Strand']
+                contig2 = row2['Contig'] if has_contig else None
+                start2, end2 = map(int, loc2.split('..'))
+                len2 = end2 - start2 + 1
+                bitscore2 = rna_results['rna_scores'].get(rna2, (0, 0))[1]
+
+                # Check if same strand and contig
+                if strand1 != strand2:
+                    continue
+                if has_contig and contig1 != contig2:
+                    continue
+
+                # Calculate overlap
+                overlap_start = max(start1, start2)
+                overlap_end = min(end1, end2)
+                overlap_len = max(0, overlap_end - overlap_start + 1)
+
+                # Check if overlap ≥50% of either gene
+                overlap_pct1 = overlap_len / len1 if len1 > 0 else 0
+                overlap_pct2 = overlap_len / len2 if len2 > 0 else 0
+
+                if overlap_pct1 >= 0.5 or overlap_pct2 >= 0.5:
+                    # Mark the one with lower bitscore for removal
+                    if bitscore1 >= bitscore2:
+                        rna_genes_to_remove.add(rna2)
+                    else:
+                        rna_genes_to_remove.add(rna1)
+                        break  # rna1 is marked, no need to check further
+
+        if rna_genes_to_remove:
+            print(f"  Removing {len(rna_genes_to_remove)} duplicate/overlapping RNA genes")
+            ptt = ptt[~ptt['PID'].isin(rna_genes_to_remove)].reset_index(drop=True)
+
+            # Also remove from rna_results tracking dicts
+            for rna_gene in rna_genes_to_remove:
+                rna_results['all_rna_genes'].discard(rna_gene)
+                rna_results['rna_toxin_locations'].pop(rna_gene, None)
+                rna_results['rna_antitoxin_locations'].pop(rna_gene, None)
+                rna_results['type8_genes'].discard(rna_gene)
+                rna_results['type3_genes'].discard(rna_gene)
+                rna_results['rna_scores'].pop(rna_gene, None)
+
+    rna_gene_mapping = {}  # Maps original gene_id -> gene_id (for compatibility)
 
     gene_to_neighborhood = {}
     neighborhood_to_genes = {}
@@ -232,58 +303,67 @@ def build_neighborhoods_with_rna_support(ptt_file, args, rna_results=None):
 
     contigs = ptt['Contig'].unique() if has_contig else [None]
 
+    # Pre-parse all locations once for speed (avoid repeated string parsing in loop)
+    locations = ptt['Location'].values
+    starts = np.zeros(len(ptt), dtype=np.int64)
+    ends = np.zeros(len(ptt), dtype=np.int64)
+    for i, loc in enumerate(locations):
+        parts = str(loc).split('..')
+        if len(parts) == 2:
+            starts[i] = int(parts[0])
+            ends[i] = int(parts[1])
+
+    pids = ptt['PID'].values
+    neighborhood_dist = args.neighborhood_distance
+    min_size = 1 if args.search_all else args.min_neighborhood_size
+    max_size = len(ptt) + 1 if args.search_all else args.max_neighborhood_size
+
     for contig in contigs:
-        contig_indices = ptt[ptt['Contig'] == contig].index.tolist() if has_contig else list(range(len(ptt)))
+        if has_contig:
+            contig_mask = (ptt['Contig'] == contig).values
+            contig_indices = np.where(contig_mask)[0]
+        else:
+            contig_indices = np.arange(len(ptt))
 
-        # Moving window algorithm
-        i = 0
-        while i < len(contig_indices):
-            window = []
-            window_start_idx = i
+        if len(contig_indices) == 0:
+            continue
 
-            # Add first gene to window
-            idx = contig_indices[i]
-            window.append(idx)
-            prev_loc = ptt.loc[idx, "Location"]
-            i += 1
+        # Vectorized gap calculation for this contig
+        contig_starts = starts[contig_indices]
+        contig_ends = ends[contig_indices]
+        contig_pids = pids[contig_indices]
 
-            # Keep adding genes until we hit a gap >200bp or >3 genes (unless search_all)
-            max_window = float('inf') if args.search_all else MAX_NEIGHBORHOOD_GENES
-            while i < len(contig_indices) and len(window) < max_window:
-                idx = contig_indices[i]
-                curr_loc = ptt.loc[idx, "Location"]
+        # Gaps between adjacent genes: start[i+1] - end[i]
+        if len(contig_indices) > 1:
+            gaps = contig_starts[1:] - contig_ends[:-1]
+            # Find where gaps exceed threshold (these are segment boundaries)
+            break_points = np.where(gaps > neighborhood_dist)[0] + 1
+            # Build list of segment boundaries
+            all_breaks = np.concatenate(([0], break_points, [len(contig_indices)]))
+        else:
+            all_breaks = np.array([0, 1])
 
-                # Calculate gap from previous gene
-                distance = calculate_distance(prev_loc, curr_loc)
+        # Process each contiguous segment
+        for seg_idx in range(len(all_breaks) - 1):
+            seg_start = all_breaks[seg_idx]
+            seg_end = all_breaks[seg_idx + 1]
+            seg_len = seg_end - seg_start
 
-                if distance > args.neighborhood_distance:
-                    # Gap too large, stop window
-                    break
+            # Check size criteria
+            if seg_len < min_size or seg_len > max_size:
+                continue
 
-                # Add to window
-                window.append(idx)
-                prev_loc = curr_loc
-                i += 1
+            # Create neighborhood
+            neighborhood_id = f"neighborhood_{neighborhood_counter}"
+            neighborhood_counter += 1
 
-            # If we have 2-3 genes in window, it's a neighborhood
-            # (or 1 gene if search_all is enabled)
-            if args.search_all or (2 <= len(window) <= MAX_NEIGHBORHOOD_GENES):
-                neighborhood_id = f"neighborhood_{neighborhood_counter}"
-                neighborhood_counter += 1
+            gene_ids = contig_pids[seg_start:seg_end].tolist()
+            neighborhood_to_genes[neighborhood_id] = gene_ids
 
-                gene_ids = [get_gene_id(ptt, idx, False) for idx in window]
-                neighborhood_to_genes[neighborhood_id] = gene_ids.copy()
-
-                for gene_id in gene_ids:
-                    gene_to_neighborhood[gene_id] = neighborhood_id
-                    if not is_ncrna(gene_id):
-                        proteins_in_neighborhoods.add(gene_id)
-
-            # If window only had 1 gene, move to next gene
-            # Otherwise we've already moved past the window
-            if len(window) == 1:
-                # Already incremented i, so continue
-                pass
+            for gene_id in gene_ids:
+                gene_to_neighborhood[gene_id] = neighborhood_id
+                if not is_ncrna(gene_id):
+                    proteins_in_neighborhoods.add(gene_id)
 
     print(f"Built {len(neighborhood_to_genes)} neighborhoods with {len(proteins_in_neighborhoods)} proteins")
     return {

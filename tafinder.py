@@ -12,7 +12,7 @@ import os
 
 # Import configuration and utilities
 from config import parse_args, initialize_environment
-from utils import is_ncrna
+from utils import is_ncrna, ensure_prostt5_weights
 
 # Import step modules
 from input_and_neighborhoods import (
@@ -37,6 +37,10 @@ def main():
     args = parse_args()
     config = initialize_environment(args)
 
+    # Ensure ProstT5 weights are available (only if Foldseek enabled and no pre-built query DB)
+    if not args.no_foldseek and not args.foldseek_query_db:
+        ensure_prostt5_weights(config['prostt5_weights'])
+
     print("Processing input files...")
     process_input_files(args, config)
 
@@ -47,9 +51,6 @@ def main():
     # STEP 2: Build neighborhoods with RNA support (including MMseqs2-detected RNAs)
     print("\n=== STEP 2: Building Neighborhoods ===")
     neighborhoods = build_neighborhoods_with_rna_support(config['ptt_file'], args, rna_results)
-    type1_validation_status = validate_type1_complementarity(
-        neighborhoods, rna_results, neighborhoods['genome_seq'], min_complementarity=30
-    )
 
     if args.search_all:
         search_file = config['faa_file']
@@ -94,26 +95,28 @@ def main():
     print("\n=== STEP 5: HMM Searches ===")
     hmm_results = run_hmm_searches(search_file, config, args)
 
-    # Add RNA results to the tracking - convert to proper format
-    # Use the mapped gene IDs (with Nucl_ prefix) from neighborhoods
-    rna_gene_mapping = neighborhoods.get('rna_gene_mapping', {})
-
+    # Add RNA results to the tracking
+    # RNA genes are now in rna_results with their new gene IDs
     rna_mmseqs_results = {
-        'toxins': set([rna_gene_mapping.get(gene, gene)
-                      for gene in rna_results['rna_toxin_locations'].keys()
-                      if gene in rna_results['validated_rna_genes']]),
-        'antitoxins': set([rna_gene_mapping.get(gene, gene)
-                          for gene in rna_results['rna_antitoxin_locations'].keys()
-                          if gene in rna_results['validated_rna_genes']]),
+        'toxins': set(rna_results['rna_toxin_locations'].keys()),
+        'antitoxins': set(rna_results['rna_antitoxin_locations'].keys()),
         'method_info': {}
     }
 
-    # Add method info for RNA hits (using mapped IDs)
-    for orig_gene in rna_results['validated_rna_genes']:
-        mapped_gene = rna_gene_mapping.get(orig_gene, orig_gene)
-        rna_mmseqs_results['method_info'][mapped_gene] = {
+    # Add method info for RNA hits with actual scores
+    for gene in rna_results['rna_toxin_locations'].keys():
+        evalue, bitscore = rna_results['rna_scores'].get(gene, (0.0, 0.0))
+        rna_mmseqs_results['method_info'][gene] = {
             'methods': ['MMseqs2_RNA'],
-            'mmseqs_evalue': 0.0  # Placeholder - actual e-values already validated
+            'mmseqs2_rna_evalue': evalue,
+            'mmseqs2_rna_bitscore': bitscore
+        }
+    for gene in rna_results['rna_antitoxin_locations'].keys():
+        evalue, bitscore = rna_results['rna_scores'].get(gene, (0.0, 0.0))
+        rna_mmseqs_results['method_info'][gene] = {
+            'methods': ['MMseqs2_RNA'],
+            'mmseqs2_rna_evalue': evalue,
+            'mmseqs2_rna_bitscore': bitscore
         }
 
     # STEP 6: Run Foldseek on unidentified
@@ -143,6 +146,14 @@ def main():
     print(f"Total antitoxins found: {len(final_results[1])}")
     if len(final_results) > 3 and final_results[3]:
         print(f"Self-TA genes found: {len(final_results[3])}")
+
+    # STEP 7: Validate Type I complementarity (AFTER all searches complete)
+    print("\n=== STEP 7: Type I Validation ===")
+    toxin_genes, antitoxin_genes = final_results[0], final_results[1]
+    type1_validation_status = validate_type1_complementarity(
+        neighborhoods, rna_results, neighborhoods['genome_seq'],
+        toxin_genes, antitoxin_genes, min_complementarity=30
+    )
 
     # Create outputs
     print("\n=== Creating Outputs ===")

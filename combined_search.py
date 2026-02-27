@@ -7,12 +7,21 @@ from config import MAX_NCRNA_DISTANCE
 from utils import (determine_cutoff_params, parse_search_output,
                    find_overlapping_gene_in_ptt, update_method_info, is_ncrna)
 
+def build_search_flags(args, evalue):
+    """Build common search flags (without GPU)."""
+    return [
+        "--format-output", "query,target,evalue,bits",
+        "--threads", str(args.threads),
+        "-e", str(evalue),
+        "--max-seqs", "10"
+    ]
+
 def run_single_rna_mmseqs_search(fna_file, db_path, output_file, args, ptt, has_contig, cutoff_value, use_evalue, evalue_param):
     locations = {}
     all_genes = set()
 
     cmd = ["mmseqs", "easy-search", fna_file, db_path, output_file, args.tmp_dir,
-           "--format-output", "query,target,pident,qlen,alnlen,mismatch,gapopen,qstart,qend,tstart,tend,evalue,bits",
+           "--format-output", "query,target,evalue,bits",
            "--threads", str(args.threads), "--search-type", "3",  # 3 = nucleotide search
            "-e", evalue_param]
 
@@ -24,18 +33,22 @@ def run_single_rna_mmseqs_search(fna_file, db_path, output_file, args, ptt, has_
             for _, row in df.iterrows():
                 query_name = str(row[0])  # Query is contig/sequence name
                 query_start, query_end = int(row[7]), int(row[8])
-                # Find overlapping genes in PTT
                 gene_id, start, end, strand, contig = find_overlapping_gene_in_ptt(ptt, query_start, query_end, has_contig, query_name)
                 if gene_id:
                     locations[gene_id] = (start, end, strand, contig)
                     all_genes.add(gene_id)
-    except subprocess.CalledProcessError:
-        pass
+
+    except subprocess.CalledProcessError as e:
+        print(f"  Single RNA MMseqs2 search failed")
+        if e.stderr:
+            print(f"  Error: {e.stderr}")
+        if e.stdout:
+            print(f"  Output: {e.stdout}")
 
     return locations, all_genes
 
 def run_rna_mmseqs_searches(fna_file, ptt_file, config, args):
-    print("Running RNA MMseqs2 searches...")
+    print("Running nucleotide MMseqs2 searches...")
 
     rna_results = {
         'rna_toxin_locations': {},      # gene_id -> (start, end, strand, contig)
@@ -43,67 +56,177 @@ def run_rna_mmseqs_searches(fna_file, ptt_file, config, args):
         'validated_rna_genes': set(),   # Only RNA toxins with paired antitoxins
         'all_rna_genes': set(),         # All detected RNAs (for tracking)
         'type8_genes': set(),           # Type VIII RNA genes
-        'type3_genes': set()            # Type III RNA genes (neighbor rule)
+        'type3_genes': set(),           # Type III RNA genes (neighbor rule)
+        'new_ptt_rows': [],             # New PTT entries to add for RNA genes
+        'rna_scores': {}                # gene_id -> (evalue, bitscore)
     }
 
-    if args.no_mmseqs:
-        return rna_results
-
-    # Read PTT to get coordinates for matching
+    # Read PTT to get contig info
     ptt = pd.read_csv(ptt_file, sep="\t", skiprows=2)
     has_contig = "Contig" in ptt.columns
 
     # Determine cutoff value and mode
     cutoff_value, use_evalue, evalue_param = determine_cutoff_params(args, 'mmseqs')
 
-    # STEP 1: Type VIII RNA systems (searched first, separately)
-    print("  Searching Type VIII RNA databases...")
-    type8_tox_locations = {}
-    type8_at_locations = {}
+    print("  Using unified nucleotide database...")
+    nucleotide_output = f"{args.tmp_dir}/mmseqs_nucleotide.out"
 
-    if 'mmseqs_type8_tox_db' in config:
-        type8_tox_output = f"{args.tmp_dir}/mmseqs_type8_T.out"
-        type8_tox_locations, type8_tox_genes = run_single_rna_mmseqs_search(
-            fna_file, config['mmseqs_type8_tox_db'], type8_tox_output, args, ptt, has_contig, cutoff_value, use_evalue, evalue_param
-        )
-        rna_results['all_rna_genes'].update(type8_tox_genes)
+    # RNA search needs coordinates for PTT mapping
+    cmd = ["mmseqs", "easy-search", fna_file, config['mmseqs_nucleotide_db'], nucleotide_output, args.tmp_dir,
+           "--search-type", "3", "--format-output", "query,target,pident,alnlen,mismatch,gapopen,qstart,qend,evalue,bits",
+           "--threads", str(args.threads), "-e", evalue_param]
 
-    if 'mmseqs_type8_antitox_db' in config:
-        type8_at_output = f"{args.tmp_dir}/mmseqs_type8_AT.out"
-        type8_at_locations, type8_at_genes = run_single_rna_mmseqs_search(
-            fna_file, config['mmseqs_type8_antitox_db'], type8_at_output, args, ptt, has_contig, cutoff_value, use_evalue, evalue_param
-        )
-        rna_results['all_rna_genes'].update(type8_at_genes)
+    try:
+        result = subprocess.run(cmd, check=True)
 
-    # Validate Type VIII pairs (neighbor rule: within 200bp)
-    for tox_gene, (tox_start, tox_end, _, tox_contig) in type8_tox_locations.items():
-        for at_gene, (at_start, at_end, _, at_contig) in type8_at_locations.items():
-            if tox_contig != at_contig:
-                continue
-            if tox_start < at_start:
-                intergenic_distance = at_start - tox_end
-            else:
-                intergenic_distance = tox_start - at_end
-            if intergenic_distance <= MAX_NCRNA_DISTANCE:
-                rna_results['validated_rna_genes'].add(tox_gene)
-                rna_results['validated_rna_genes'].add(at_gene)
-                rna_results['type8_genes'].add(tox_gene)
-                rna_results['type8_genes'].add(at_gene)
+        df = parse_search_output(nucleotide_output, 'mmseqs_rna', cutoff_value, use_evalue)
 
-    # Run MMseqs2 for RNA antitoxins only (Type I/III toxins are proteins)
-    rna_at_output = f"{args.tmp_dir}/mmseqs_rna_AT.out"
-    rna_results['rna_antitoxin_locations'], at_genes = run_single_rna_mmseqs_search(
-        fna_file, config['mmseqs_rna_antitox_db'], rna_at_output, args, ptt, has_contig, cutoff_value, use_evalue, evalue_param
-    )
-    rna_results['all_rna_genes'].update(at_genes)
+        if not df.empty:
+            type8_tox_locations = {}
+            type8_at_locations = {}
+            type1_counter = 0
+            type3_counter = 0
+            type8_counter = 0
 
-    # Merge Type VIII locations into main results
-    rna_results['rna_toxin_locations'].update(type8_tox_locations)
-    rna_results['rna_antitoxin_locations'].update(type8_at_locations)
+            for _, row in df.iterrows():
+                query_name = str(row[0])  # Contig/sequence name
+                target_id = str(row[1])   # Target has prefix
+                query_start, query_end = int(row[6]), int(row[7])  # qstart, qend now at columns 6, 7
+                evalue = float(row[8])  # E-value at column 8
+                bitscore = float(row[9])  # Bitscore at column 9
 
-    # Type I/III RNA antitoxins are validated later when paired with protein toxins
-    # (validation happens in main after protein searches complete)
+                # Determine strand from coordinates
+                if query_start < query_end:
+                    strand = '+'
+                    start, end = query_start, query_end
+                else:
+                    strand = '-'
+                    start, end = query_end, query_start
 
+                # Contig is the query name
+                contig = query_name
+                length = (end - start + 1) // 3  # Approximate length in AA for consistency
+
+                # Parse prefix to determine type and create new PTT entry
+                if target_id.startswith('toxin8_'):
+                    # Type VIII RNA toxin
+                    gene_id = f"Nucl_type8_tox_{type8_counter}"
+                    type8_counter += 1
+                    type8_tox_locations[gene_id] = (start, end, strand, contig)
+                    rna_results['all_rna_genes'].add(gene_id)
+                    rna_results['rna_scores'][gene_id] = (evalue, bitscore)
+
+                    # Create PTT row
+                    ptt_row = {
+                        'Location': f"{start}..{end}",
+                        'Strand': strand,
+                        'Length': length,
+                        'PID': gene_id,
+                        'Gene': '-',
+                        'Synonym': '-',
+                        'Code': '-',
+                        'COG': '-',
+                        'Product': f"Type VIII RNA toxin ({target_id})",
+                        'Contig': contig if has_contig else ptt.iloc[0]['Contig']
+                    }
+                    rna_results['new_ptt_rows'].append(ptt_row)
+
+                elif target_id.startswith('antitoxin8_'):
+                    # Type VIII RNA antitoxin
+                    gene_id = f"Nucl_type8_at_{type8_counter}"
+                    type8_counter += 1
+                    type8_at_locations[gene_id] = (start, end, strand, contig)
+                    rna_results['all_rna_genes'].add(gene_id)
+                    rna_results['rna_scores'][gene_id] = (evalue, bitscore)
+
+                    ptt_row = {
+                        'Location': f"{start}..{end}",
+                        'Strand': strand,
+                        'Length': length,
+                        'PID': gene_id,
+                        'Gene': '-',
+                        'Synonym': '-',
+                        'Code': '-',
+                        'COG': '-',
+                        'Product': f"Type VIII RNA antitoxin ({target_id})",
+                        'Contig': contig if has_contig else ptt.iloc[0]['Contig']
+                    }
+                    rna_results['new_ptt_rows'].append(ptt_row)
+
+                elif target_id.startswith('antitoxin1_'):
+                    # Type I RNA antitoxin
+                    gene_id = f"Nucl_type1_at_{type1_counter}"
+                    type1_counter += 1
+                    rna_results['rna_antitoxin_locations'][gene_id] = (start, end, strand, contig)
+                    rna_results['all_rna_genes'].add(gene_id)
+                    rna_results['rna_scores'][gene_id] = (evalue, bitscore)
+
+                    ptt_row = {
+                        'Location': f"{start}..{end}",
+                        'Strand': strand,
+                        'Length': length,
+                        'PID': gene_id,
+                        'Gene': '-',
+                        'Synonym': '-',
+                        'Code': '-',
+                        'COG': '-',
+                        'Product': f"Type I RNA antitoxin ({target_id})",
+                        'Contig': contig if has_contig else ptt.iloc[0]['Contig']
+                    }
+                    rna_results['new_ptt_rows'].append(ptt_row)
+
+                elif target_id.startswith('antitoxin3_'):
+                    # Type III RNA antitoxin
+                    gene_id = f"Nucl_type3_at_{type3_counter}"
+                    type3_counter += 1
+                    rna_results['rna_antitoxin_locations'][gene_id] = (start, end, strand, contig)
+                    rna_results['all_rna_genes'].add(gene_id)
+                    rna_results['type3_genes'].add(gene_id)
+                    rna_results['rna_scores'][gene_id] = (evalue, bitscore)
+
+                    ptt_row = {
+                        'Location': f"{start}..{end}",
+                        'Strand': strand,
+                        'Length': length,
+                        'PID': gene_id,
+                        'Gene': '-',
+                        'Synonym': '-',
+                        'Code': '-',
+                        'COG': '-',
+                        'Product': f"Type III RNA antitoxin ({target_id})",
+                        'Contig': contig if has_contig else ptt.iloc[0]['Contig']
+                    }
+                    rna_results['new_ptt_rows'].append(ptt_row)
+
+                # Skip other prefixes (toxin_, antitoxin_) - handled by DNA search
+
+            # Validate Type VIII pairs (neighbor rule: within 200bp)
+            for tox_gene, (tox_start, tox_end, _, tox_contig) in type8_tox_locations.items():
+                for at_gene, (at_start, at_end, _, at_contig) in type8_at_locations.items():
+                    if tox_contig != at_contig:
+                        continue
+                    if tox_start < at_start:
+                        intergenic_distance = at_start - tox_end
+                    else:
+                        intergenic_distance = tox_start - at_end
+                    if intergenic_distance <= MAX_NCRNA_DISTANCE:
+                        rna_results['validated_rna_genes'].add(tox_gene)
+                        rna_results['validated_rna_genes'].add(at_gene)
+                        rna_results['type8_genes'].add(tox_gene)
+                        rna_results['type8_genes'].add(at_gene)
+
+            # Merge Type VIII locations into main results
+            rna_results['rna_toxin_locations'].update(type8_tox_locations)
+            rna_results['rna_antitoxin_locations'].update(type8_at_locations)
+
+            print(f"  Found {type1_counter} Type I, {type3_counter} Type III, {len(type8_tox_locations)} Type VIII toxin, {len(type8_at_locations)} Type VIII antitoxin RNA hits")
+
+    except subprocess.CalledProcessError as e:
+        print("  Warning: Nucleotide database search failed")
+        if e.stderr:
+            print(f"  Error: {e.stderr}")
+        if e.stdout:
+            print(f"  Output: {e.stdout}")
     return rna_results
 
 def run_mmseqs_searches(search_file, config, args):
@@ -112,99 +235,97 @@ def run_mmseqs_searches(search_file, config, args):
     if args.no_mmseqs:
         return results
 
-    mmseqs_configs = [
-        ('T', config['mmseqs_tox_db']),
-        ('AT', config['mmseqs_antitox_db'])
-    ]
-
-    # Determine cutoff value and mode
-    cutoff_value, use_evalue, evalue_param = determine_cutoff_params(args, 'mmseqs')
-
-    # # Check if search file exists and has content
-    # if not os.path.exists(search_file):
-    #     print(f"  ERROR: Search file does not exist: {search_file}")
-    #     return results
-
-    # file_size = os.path.getsize(search_file)
-    # if file_size == 0:
-    #     print(f"  ERROR: Search file is empty: {search_file}")
-    #     return results
-
-    # Count sequences in file
     seq_count = sum(1 for line in open(search_file) if line.startswith('>'))
     file_size = os.path.getsize(search_file)
     print(f"  Search file: {search_file} ({seq_count} sequences, {file_size} bytes)")
 
-    for target, db_path in mmseqs_configs:
-        output_file = f"{args.tmp_dir}/mmseqs_{target}.out"
+    output_file = f"{args.tmp_dir}/mmseqs_unified.out"
 
-        # MMseqs2 easy-search command
-        # Format: query target output tmpDir
-        # Output format: query, target, pident, alnlen, mismatch, gapopen, qstart, qend, tstart, tend, evalue, bits
-        cmd = ["mmseqs", "easy-search", search_file, db_path, output_file, args.tmp_dir,
-               "--format-output", "query,target,pident,alnlen,mismatch,gapopen,qstart,qend,tstart,tend,evalue,bits",
-               "--threads", str(args.threads), "--gpu", "1",
-               "-e", evalue_param]
+    common_flags = build_search_flags(args, args.mmseqs_evalue)
+    gpu_flag = ["--gpu", "1"] if config['gpu_available'] else []
+    sensitivity_flag = ["-s", str(args.mmseqs_sensitivity)] if args.mmseqs_sensitivity else []
+    cmd = ["mmseqs", "easy-search", search_file, config['mmseqs_protein_db'], output_file, args.tmp_dir] + common_flags + gpu_flag + sensitivity_flag
 
-        try:
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
-            df = parse_search_output(output_file, 'mmseqs', cutoff_value, use_evalue, args.havalue, args.maximum_length)
+    try:
+        subprocess.run(cmd, check=True)
 
-            if not df.empty:
-                gene_set = results['toxins'] if target == 'T' else results['antitoxins']
-                for _, row in df.iterrows():
-                    gene_id = row.iloc[0]
-                    gene_set.add(gene_id)
-                    update_method_info(results, gene_id, 'MMseqs2', row.iloc[6], row.iloc[7], use_evalue)
-        except subprocess.CalledProcessError as e:
-            print(f"  MMseqs2 {target} search failed: {e}")
-            continue
+        df = pd.read_csv(output_file, sep="\t", header=None,
+                        names=["query", "target", "evalue", "bitscore"])
+
+        # Filter by bitscore threshold
+        df = df[df['bitscore'] >= args.mmseqs_bitscore]
+
+        if not df.empty:
+            # Keep best bitscore per query
+            df = df.sort_values('bitscore', ascending=False).groupby('query').first().reset_index()
+
+            for _, row in df.iterrows():
+                query_id = row['query']
+                target_id = row['target']
+
+                # Determine if hit is toxin or antitoxin based on prefix
+                if target_id.startswith('toxin_'):
+                    results['toxins'].add(query_id)
+                    update_method_info(results, query_id, 'MMseqs2', row['evalue'], row['bitscore'], False, target=target_id)
+                elif target_id.startswith('antitoxin_'):
+                    results['antitoxins'].add(query_id)
+                    update_method_info(results, query_id, 'MMseqs2', row['evalue'], row['bitscore'], False, target=target_id)
+
+    except subprocess.CalledProcessError as e:
+        print(f"  MMseqs2 search failed")
+        if e.stderr:
+            print(f"  Error: {e.stderr}")
+        if e.stdout:
+            print(f"  Output: {e.stdout}")
 
     print(f"  Protein MMseqs2 found {len(results['toxins'])} toxins, {len(results['antitoxins'])} antitoxins")
     return results
 
 def run_dna_mmseqs_searches(cds_nuc_file, config, args):
-    results = {'toxins': set(), 'antitoxins': set(), 'method_info': {}}
-
-    if args.no_mmseqs:
-        return results
-
-    if 'mmseqs_dna_tox_db' not in config or 'mmseqs_dna_antitox_db' not in config:
-        return results
-
     print("Running MMseqs2 DNA searches...")
 
-    # Determine cutoff value and mode
-    cutoff_value, use_evalue, evalue_param = determine_cutoff_params(args, 'mmseqs')
+    results = {'toxins': set(), 'antitoxins': set(), 'method_info': {}}
 
-    dna_configs = [
-        ('T', config['mmseqs_dna_tox_db']),
-        ('AT', config['mmseqs_dna_antitox_db'])
-    ]
+    output_file = f"{args.tmp_dir}/mmseqs_dna.out"
 
-    for target, db_path in dna_configs:
-        output_file = f"{args.tmp_dir}/mmseqs_dna_{target}.out"
+    common_flags = build_search_flags(args, args.mmseqs_evalue)
+    sensitivity_flag = ["-s", str(args.mmseqs_sensitivity)] if args.mmseqs_sensitivity else []
 
-        # Search CDS nucleotide sequences against DNA database
-        cmd = ["mmseqs", "easy-search", cds_nuc_file, db_path, output_file, args.tmp_dir,
-               "--format-output", "query,target,pident,alnlen,mismatch,gapopen,qstart,qend,tstart,tend,evalue,bits",
-               "--threads", str(args.threads), "--search-type", "3",  # nucleotide search
-               "-e", evalue_param]
+    cmd = ["mmseqs", "easy-search", cds_nuc_file, config['mmseqs_nucleotide_db'], output_file, args.tmp_dir,
+           "--search-type", "3"] + common_flags + sensitivity_flag
 
-        try:
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
-            df = parse_search_output(output_file, 'mmseqs_rna', cutoff_value, use_evalue)
+    try:
+        subprocess.run(cmd, check=True)
 
-            if not df.empty:
-                gene_set = results['toxins'] if target == 'T' else results['antitoxins']
-                for _, row in df.iterrows():
-                    # Query ID is now the ORF name directly (e.g., ORF123)
-                    gene_id = str(row[0])
-                    gene_set.add(gene_id)
-                    update_method_info(results, gene_id, 'MMseqs2_DNA', row[10], row[11], use_evalue)
+        df = pd.read_csv(output_file, sep="\t", header=None,
+                        names=["query", "target", "evalue", "bitscore"])
 
-        except subprocess.CalledProcessError:
-            continue
+        # Filter by bitscore threshold
+        df = df[df['bitscore'] >= args.mmseqs_bitscore]
+
+        if not df.empty:
+            # Keep best bitscore per query
+            df = df.sort_values('bitscore', ascending=False).groupby('query').first().reset_index()
+
+            for _, row in df.iterrows():
+                query_id = row['query']
+                target_id = row['target']
+
+                # Determine if hit is toxin or antitoxin based on prefix
+                # DNA toxins use toxin_ prefix, DNA antitoxins use antitoxin_ prefix
+                if target_id.startswith('toxin_'):
+                    results['toxins'].add(query_id)
+                    update_method_info(results, query_id, 'MMseqs2_DNA', row['evalue'], row['bitscore'], False, target=target_id)
+                elif target_id.startswith('antitoxin_'):
+                    results['antitoxins'].add(query_id)
+                    update_method_info(results, query_id, 'MMseqs2_DNA', row['evalue'], row['bitscore'], False, target=target_id)
+
+    except subprocess.CalledProcessError as e:
+        print(f"  DNA search failed")
+        if e.stderr:
+            print(f"  Error: {e.stderr}")
+        if e.stdout:
+            print(f"  Output: {e.stdout}")
 
     print(f"  DNA search found {len(results['toxins'])} toxins, {len(results['antitoxins'])} antitoxins")
     return results
@@ -213,41 +334,71 @@ def run_hmm_searches(search_file, config, args):
     results = {'toxins': set(), 'antitoxins': set(), 'method_info': {}}
 
     if args.no_hmm:
+        print("  HMM searches disabled (--no_hmm)")
         return results
 
-    hmm_configs = [
-        ('T', config['hmm_tox_file']),
-        ('AT', config['hmm_antitox_file'])
-    ]
+    print("  Running HMM searches...")
 
-    # Determine cutoff value and mode
-    cutoff_value, use_evalue, evalue_param = determine_cutoff_params(args, 'hmm')
+    # Use unified HMM database with e-value cutoff (bitscore filtering happens post-search)
+    output_file = f"{args.tmp_dir}/hmmsearch_unified.domtbl"
+    cmd = ["hmmsearch", "--cpu", str(args.threads), "--noali", "-E", str(args.hmm_evalue),
+           "-o", f"{args.tmp_dir}/hmmsearch.txt",
+           "--domtblout", output_file, config['hmm_combined_file'], search_file]
 
-    for target, hmm_file in hmm_configs:
-        output_file = f"{args.tmp_dir}/hmmsearch_{target}.domtbl"
-        cmd = ["hmmsearch", "--cpu", str(args.threads), "--noali", "-E", evalue_param,
-               "--domE", evalue_param, "-o", f"{args.tmp_dir}/hmmsearch.txt",
-               "--domtblout", output_file, hmm_file, search_file]
+    try:
+        subprocess.run(cmd, check=True)
 
-        try:
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
+        # Parse domtblout format
+        # Columns: target_name, accession, tlen, query_name, accession, qlen, evalue, score, bias, #, of, c-Evalue, i-Evalue, score, bias, from, to, from, to, from, to, acc, description
+        hits = []
+        with open(output_file, 'r') as f:
+            for line in f:
+                if line.startswith('#'):
+                    continue
+                parts = line.split()
+                if len(parts) < 23:
+                    continue
+                query_id = parts[0]  # Query protein
+                target_id = parts[3]  # HMM profile name
+                score = float(parts[7])  # Full sequence score
+                evalue = float(parts[6])  # Full sequence e-value
 
-            df = parse_search_output(output_file, 'hmm', cutoff_value, use_evalue, None, args.maximum_length)
+                hits.append({
+                    'query': query_id,
+                    'target': target_id,
+                    'score': score,
+                    'evalue': evalue
+                })
 
-            if not df.empty:
-                gene_set = results['toxins'] if target == 'T' else results['antitoxins']
-                for _, row in df.iterrows():
-                    gene_id = row.iloc[0]
-                    gene_set.add(gene_id)
-                    update_method_info(results, gene_id, 'HMM', row.iloc[6], row.iloc[7], use_evalue)
-        except subprocess.CalledProcessError as e:
-            print(f"  HMM {target} search failed: {e}")
-            continue
+        for hit in hits:
+            query_id = hit['query']
+            target_id = hit['target']
 
+            # Apply bitscore filter
+            if hit['score'] < args.hmm_bitscore:
+                continue
+
+            # Determine if hit is toxin or antitoxin based on prefix
+            if target_id.startswith('toxin_'):
+                results['toxins'].add(query_id)
+                update_method_info(results, query_id, 'HMM', hit['evalue'], hit['score'], False, target=target_id)
+            elif target_id.startswith('antitoxin_'):
+                results['antitoxins'].add(query_id)
+                update_method_info(results, query_id, 'HMM', hit['evalue'], hit['score'], False, target=target_id)
+
+    except subprocess.CalledProcessError as e:
+        print(f"  HMM search failed")
+        if e.stderr:
+            print(f"  Error: {e.stderr}")
+
+    print(f"  HMM found {len(results['toxins'])} toxins, {len(results['antitoxins'])} antitoxins")
     return results
 
 def run_foldseek_searches(candidate_proteins, config, args):
-    """Run Foldseek searches on candidates using createdb -> search -> convertalis pipeline."""
+    """Run Foldseek searches using easy-search."""
+    import time
+    start_time = time.time()
+
     results = {'toxins': set(), 'antitoxins': set(), 'method_info': {}}
 
     if args.no_foldseek or not candidate_proteins:
@@ -258,15 +409,7 @@ def run_foldseek_searches(candidate_proteins, config, args):
         print("Foldseek not found in PATH")
         return results
 
-    # Setup Foldseek weights
-    if not os.path.exists(config['prostt5_weights']):
-        try:
-            subprocess.run([foldseek_path, "databases", "ProstT5", config['prostt5_weights'], args.tmp_dir],
-                         check=True, capture_output=True)
-        except subprocess.CalledProcessError:
-            return results
-
-    # Create candidate FASTA
+    # Create candidate FASTA file (always needed for easy-search)
     candidate_faa = f"{args.tmp_dir}/candidates.faa"
     protein_seqs = {r.id: str(r.seq) for r in SeqIO.parse(config['faa_file'], "fasta") if r.id in candidate_proteins}
 
@@ -277,82 +420,88 @@ def run_foldseek_searches(candidate_proteins, config, args):
         for prot_id, seq in protein_seqs.items():
             f.write(f">{prot_id}\n{seq}\n")
 
-    # Step 1: Create query database with ProstT5
-    foldseek_query_db = f"{args.tmp_dir}/foldseek_query_db"
+    output_file = f"{args.tmp_dir}/foldseek_unified.tsv"
+
+    common_flags = build_search_flags(args, args.foldseek_evalue)
+    gpu_flag = ["--gpu", "1"] if config['gpu_available'] else []
+    sensitivity_flag = ["-s", str(args.foldseek_sensitivity)] if args.foldseek_sensitivity else []
+
+    # Check if pre-computed query database is provided
+    if args.foldseek_query_db:
+        print(f"  Using pre-built Foldseek query database: {args.foldseek_query_db}")
+        search_cmd = [foldseek_path, "easy-search", args.foldseek_query_db, config['foldseek_db'], output_file, args.tmp_dir] + common_flags + gpu_flag + sensitivity_flag
+    else:
+        create_cmd = [foldseek_path, "createdb", candidate_faa, str(args.tmp_dir + "/foldseek_query_db"), "--prostt5-model", config['prostt5_weights']] + gpu_flag
+        search_cmd = [foldseek_path, "easy-search", str(args.tmp_dir + "/foldseek_query_db"), config['foldseek_db'], output_file, args.tmp_dir,
+               "--prostt5-model", config['prostt5_weights']] + common_flags + gpu_flag + sensitivity_flag
+
     try:
-        subprocess.run([foldseek_path, "createdb", candidate_faa, foldseek_query_db,
-                       "--prostt5-model", config['prostt5_weights'],
-                       "--gpu", "1"],
-                      capture_output=True, check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"Foldseek createdb failed: {e}")
-        return results
+        search_start = time.time()
+        if not args.foldseek_query_db:
+            subprocess.run(create_cmd, check=True)
+        subprocess.run(search_cmd, check=True)
+        print(f"  Foldseek completed in {time.time() - search_start:.2f}s")
 
-    # Step 2: Make padded sequence database
-    foldseek_query_db_padded = f"{args.tmp_dir}/foldseek_query_db_padded"
-    try:
-        subprocess.run([foldseek_path, "makepaddedseqdb", foldseek_query_db, foldseek_query_db_padded],
-                      capture_output=True, check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"Foldseek makepaddedseqdb failed: {e}")
-        return results
+        # Parse results and track bitscores for dual hits
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            df = pd.read_csv(output_file, sep="\t", header=None,
+                           names=["query", "target", "evalue", "bitscore"])
 
-    # Determine cutoff value and mode
-    cutoff_value, use_evalue, evalue_param = determine_cutoff_params(args, 'foldseek')
+            # Filter by bitscore threshold
+            df = df[df['bitscore'] >= args.foldseek_bitscore]
 
-    # Step 3 & 4: Search both databases (already padded) and convert results
-    for target, db_path in [('toxins', config['foldseek_tox_db']), ('antitoxins', config['foldseek_antitox_db'])]:
-        foldseek_result_db = f"{args.tmp_dir}/foldseek_{target}_result"
-        output_file = f"{args.tmp_dir}/foldseek_{target}.tsv"
+            toxin_scores = {}  
+            antitoxin_scores = {}  
 
-        try:
-            # Step 3: Run foldseek search on padded databases
-            subprocess.run([foldseek_path, "search", foldseek_query_db_padded, db_path, foldseek_result_db, args.tmp_dir,
-                           "--gpu", "1",
-                           "-e", evalue_param,
-                           "-s", str(args.foldseeksensitivity)],
-                          capture_output=True, check=True)
+            for _, row in df.iterrows():
+                query_id = row['query']
+                target_id = row['target']
+                evalue = row['evalue']
+                bitscore = row['bitscore']
 
-            # Step 4: Convert alignment to TSV format
-            subprocess.run([foldseek_path, "convertalis", foldseek_query_db_padded, db_path, foldseek_result_db, output_file,
-                           "--format-output", "query,target,pident,alnlen,mismatch,gapopen,qstart,qend,tstart,tend,evalue,bits"],
-                          capture_output=True, check=True)
+                # Track best bitscore for toxins and antitoxins separately
+                if target_id.startswith('toxin_'):
+                    if query_id not in toxin_scores or bitscore > toxin_scores[query_id][2]:
+                        toxin_scores[query_id] = (target_id, evalue, bitscore)
+                elif target_id.startswith('antitoxin_'):
+                    if query_id not in antitoxin_scores or bitscore > antitoxin_scores[query_id][2]:
+                        antitoxin_scores[query_id] = (target_id, evalue, bitscore)
 
-            # Parse results
-            if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-                df = pd.read_csv(output_file, sep="\t", header=None,
-                               names=["query", "target", "pident", "alnlen", "mismatch", "gapopen",
-                                     "qstart", "qend", "tstart", "tend", "evalue", "bitscore"])
+            # Handle dual identifications: keep the one with higher bitscore
+            for gene_id in set(toxin_scores.keys()).intersection(antitoxin_scores.keys()):
+                tox_score = toxin_scores[gene_id][2]
+                at_score = antitoxin_scores[gene_id][2]
 
-                # Apply cutoff based on mode
-                if use_evalue:
-                    df = df[df['evalue'] < cutoff_value]
+                if tox_score >= at_score:
+                    del antitoxin_scores[gene_id]
                 else:
-                    df = df[df['bitscore'] >= cutoff_value]
+                    del toxin_scores[gene_id]
 
-                # Keep best hit per query
-                df = df.sort_values('evalue').groupby('query').first().reset_index()
+            # Populate results
+            for gene_id, (target_id, evalue, bitscore) in toxin_scores.items():
+                results['toxins'].add(gene_id)
+                results['method_info'][gene_id] = {
+                    'methods': ['Foldseek'],
+                    'foldseek_evalue': evalue,
+                    'foldseek_bitscore': bitscore,
+                    'foldseek_target': target_id
+                }
 
-                gene_set = results['toxins'] if target == 'toxins' else results['antitoxins']
-                for _, row in df.iterrows():
-                    gene_id = row['query']
-                    gene_set.add(gene_id)
-                    results['method_info'][gene_id] = {
-                        'methods': ['Foldseek'],
-                        'foldseek_evalue': row['evalue'],
-                        'foldseek_bitscore': row['bitscore']
-                    }
-        except subprocess.CalledProcessError as e:
-            print(f"Foldseek {target} search failed: {e}")
-            continue
+            for gene_id, (target_id, evalue, bitscore) in antitoxin_scores.items():
+                results['antitoxins'].add(gene_id)
+                results['method_info'][gene_id] = {
+                    'methods': ['Foldseek'],
+                    'foldseek_evalue': evalue,
+                    'foldseek_bitscore': bitscore,
+                    'foldseek_target': target_id
+                }
 
-    # Handle dual identifications
-    dual_identified = results['toxins'].intersection(results['antitoxins'])
-    for gene_id in dual_identified:
-        info = results['method_info'][gene_id]
-        tox_score = info.get('foldseek_bitscore', 0)
-        # For simplicity, remove from antitoxins if found in both
-        results['antitoxins'].discard(gene_id)
+    except subprocess.CalledProcessError as e:
+        print(f"Foldseek easy-search failed")
+        if e.stderr:
+            print(f"  Error: {e.stderr}")
+        if e.stdout:
+            print(f"  Output: {e.stdout}")
 
     print(f"Foldseek found {len(results['toxins'])} toxins, {len(results['antitoxins'])} antitoxins")
     return results

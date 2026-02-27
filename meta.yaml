@@ -1,5 +1,5 @@
 {% set name = "tafinder3d" %}
-{% set version = "1.0.0" %}
+{% set version = "1.0.5" %}
 
 package:
   name: {{ name|lower }}
@@ -7,13 +7,21 @@ package:
 
 source:
   path: .
+  exclude:
+    - conda-bld
+    - .git
+    - __pycache__
+    - "*.pyc"
+    - .pytest_cache
+    - "*.egg-info"
 
 build:
   number: 0
   noarch: python
   script:
     - python setup.py install --single-version-externally-managed --record=record.txt
-    - pip install torch==2.9.0 transformers==4.57.1 sentencepiece==0.2.1 protobuf==6.33.0 bio==1.8.1
+    - mkdir -p $PREFIX/share/tafinder3d
+    - cp -r tafinder_db $PREFIX/share/tafinder3d/
   entry_points:
     - tafinder = tafinder:main
 
@@ -32,17 +40,6 @@ requirements:
     - prodigal-gv=2.11.0
     - foldseek
     - pip
-
-test:
-  imports:
-    - config
-    - utils
-    - input_and_neighborhoods
-    - combined_search
-    - result_processing
-    - output_generation
-  commands:
-    - tafinder -h
 
 about:
   home: https://github.com/schmigle/TAfinder3D

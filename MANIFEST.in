@@ -1,0 +1,11 @@
+include *.py
+include *.md
+include *.txt
+include *.yaml
+include tafinder
+recursive-include tafinder_db *
+exclude conda-bld
+exclude __pycache__
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude __pycache__

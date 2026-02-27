@@ -3,24 +3,31 @@ import pandas as pd
 import os
 from utils import build_gene_entry
 
-def setup_output_columns(df, method_info, type1_validation_status=None):
+def setup_output_columns(df, method_info, type1_validation_status=None, family_map=None):
     if df.empty:
         return df
 
     # Column mapping for cleaner code
     score_columns = {
         'mmseqs': ('MMseqs_Evalue', 'MMseqs_Bitscore'),
+        'mmseqs2_rna': ('MMseqs_Evalue', 'MMseqs_Bitscore'),  # RNA uses same columns
         'hmm': ('HMM_Evalue', 'HMM_Bitscore'),
         'foldseek': ('Foldseek_Evalue', 'Foldseek_Bitscore')
     }
 
+    # Methods to check for target, in priority order
+    target_methods = ['mmseqs2', 'mmseqs2_dna', 'mmseqs2_rna', 'hmm', 'foldseek']
+
     # Add base columns (including Type_I_Status for validation)
-    base_cols = ["domain", "MMseqs_hit", "Method",
+    base_cols = ["TA_Family", "domain", "MMseqs_hit", "Method",
                  "MMseqs_Evalue", "MMseqs_Bitscore", "HMM_Evalue", "HMM_Bitscore", "Foldseek_Evalue", "Foldseek_Bitscore",
                  "Type_I_Status"]
 
     for col in base_cols:
         df[col] = '-'
+
+    if family_map is None:
+        family_map = {}
 
     # Fill method information
     for i in range(len(df)):
@@ -44,6 +51,16 @@ def setup_output_columns(df, method_info, type1_validation_status=None):
                 if bitscore_key in info:
                     df.iloc[i, df.columns.get_loc(bitscore_col)] = info[bitscore_key]
 
+            # Resolve TA family name from the best available target hit
+            for method in target_methods:
+                target_key = f'{method}_target'
+                if target_key in info:
+                    target_id = info[target_key]
+                    family_name = _resolve_family_name(target_id, family_map)
+                    if family_name:
+                        df.iloc[i, df.columns.get_loc('TA_Family')] = family_name
+                        break
+
     if 'Contig' in df.columns:
         cols = [c for c in df.columns if c != 'Contig']
         product_idx = cols.index('Product') if 'Product' in cols else len(cols)-1
@@ -52,28 +69,43 @@ def setup_output_columns(df, method_info, type1_validation_status=None):
 
     return df
 
+
+def _resolve_family_name(target_id, family_map):
+    """Resolve a database target ID to a human-readable protein family name.
+
+    Checks the lookup table first, then falls back to stripping the
+    toxin_/antitoxin_ prefix from the target ID.
+    """
+    if target_id in family_map:
+        return family_map[target_id]
+    # Fall back: strip prefix
+    if target_id.startswith('toxin_'):
+        return target_id[6:]
+    if target_id.startswith('antitoxin_'):
+        return target_id[10:]
+    return target_id
+
 def create_all_outputs(search_results, neighborhoods, config, args, type1_validation_status=None):
     """Generate all output files."""
     toxin_genes, antitoxin_genes, method_info = search_results[0], search_results[1], search_results[2]
-    self_ta_genes = search_results[3] if len(search_results) > 3 else set()
 
     # Import here to avoid circular dependency
     from result_processing import pair_ta_systems, filter_same_type_TA, validate_complete_pairs
 
-    # Pass self_ta_genes to handle pairing logic
-    df_pairs, orphan_genes, final_self_ta_genes = pair_ta_systems(toxin_genes, antitoxin_genes, neighborhoods, self_ta_genes)
+    df_pairs, orphan_genes = pair_ta_systems(toxin_genes, antitoxin_genes, neighborhoods, args.max_pairing_distance)
 
     if not df_pairs.empty:
         # Add annotations BEFORE filtering
-        df_pairs = setup_output_columns(df_pairs, method_info, type1_validation_status)
+        family_map = config.get('family_map', {})
+        df_pairs = setup_output_columns(df_pairs, method_info, type1_validation_status, family_map=family_map)
 
         # Apply validation filters
         df_pairs = filter_same_type_TA(df_pairs)
         df_pairs = validate_complete_pairs(df_pairs)
 
         if not df_pairs.empty:
-            df_pairs.to_csv(args.output, index=False)
-            print(f"TA pairs saved to {args.output}")
+            df_pairs.to_csv(args.outfile, index=False)
+            print(f"TA pairs saved to {args.outfile}")
         else:
             print("No valid TA pairs after validation")
 
@@ -91,37 +123,11 @@ def create_all_outputs(search_results, neighborhoods, config, args, type1_valida
             orphan_data.append(orphan_entry)
 
         df_orphans = pd.DataFrame(orphan_data)
-        df_orphans = setup_output_columns(df_orphans, method_info, type1_validation_status)
-        orphan_output = args.output.replace('.csv', '_orphan.csv')
+        family_map = config.get('family_map', {})
+        df_orphans = setup_output_columns(df_orphans, method_info, type1_validation_status, family_map=family_map)
+        orphan_output = args.outfile.replace('.csv', '_orphan.csv')
         df_orphans.to_csv(orphan_output, index=False)
         print(f"Orphans saved to {orphan_output}")
-
-    # Self-TA output (genes that are their own antitoxin) - use final_self_ta_genes (unpaired only)
-    if final_self_ta_genes:
-        ptt = neighborhoods['ptt']
-        has_contig = "Contig" in ptt.columns
-        self_ta_data = []
-        for i, gene_id in enumerate(final_self_ta_genes, 1):
-            gene_rows = ptt[ptt['PID'] == gene_id]
-            if len(gene_rows) == 0:
-                continue
-            gene_row = gene_rows.iloc[0]
-            # Self-TAs are both toxin and antitoxin
-            self_ta_entry = build_gene_entry(gene_row, 'Self-TA', i, has_contig)
-            self_ta_entry['Self_TA_ID'] = self_ta_entry.pop('TA_ID')
-            self_ta_data.append(self_ta_entry)
-
-        if self_ta_data:
-            df_self_ta = pd.DataFrame(self_ta_data)
-            df_self_ta = setup_output_columns(df_self_ta, method_info, type1_validation_status)
-
-            # Create filename with "self_" prefix as requested
-            base_name = os.path.basename(args.output)
-            dir_name = os.path.dirname(args.output)
-            self_ta_output = os.path.join(dir_name, f"self_{base_name}")
-
-            df_self_ta.to_csv(self_ta_output, index=False)
-            print(f"Self-TA genes saved to {self_ta_output}")
 
     # Neighborhood output
     if args.save_unidentified:

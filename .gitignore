@@ -8,6 +8,9 @@ __pycache__/
 dist/
 build/
 
+# Conda build artifacts
+conda-bld/
+
 # Virtual environments
 venv/
 env/
@@ -34,8 +37,19 @@ result*.csv
 self_*.csv
 ta_neighborhoods.*
 
-# Database files (large)
-tafinder_db/
+# Keep family map TSV files in tafinder_db
+!tafinder_db/ta_family_map.tsv
+!tafinder_db/ta_nucleotide_family_map.tsv
+
+# Build artifacts in tafinder_db (not for version control)
+tafinder_db/combined_TA.fasta
+tafinder_db/needs_blast.fasta
+tafinder_db/needs_ncbi_accessions.txt
+tafinder_db/blast_results.tsv
+tafinder_db/blast_progress.json
+
+# Database files (note: tafinder_db is now included in the conda package)
+# Exclude user's custom database directory only
 db/
 
 # OS
