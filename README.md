@@ -20,7 +20,7 @@ It can be run with the following command:
 
 `-f/--format`--format of the genome file. Specify `gbk` or `fna`.
 
-`-o/--outfile`--name of the output file. This will be a `csv` file, though you can name it any string you like.
+`-o/--outfile`--name of the output file. This will be a `csv` file listing paired toxins and antitoxins.
 
 A complete list of options is provided in the help text, accessible with `tafinder -h`.
 
